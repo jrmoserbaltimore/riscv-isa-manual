@@ -1,0 +1,183 @@
+\chapter{``Zvinx'' Standard Extension for Lightweight Vector Architecture, v0.0}
+\label{sec:zvinx}
+
+This chapter defines the ``Zvinx'' extension, which extends the ``RVI'' base
+instruction set, the ``M'' extension, the ``A'' extension, and the floating
+point ``F'', ``D'', and ``Q'' extensions via a vector mode controlled by a
+new CSR.
+
+\begin{commentary}
+    The lightweight vector extension is intended to support data-parallel
+    execution of existing arithmetic and floating-point instructions, with
+    minimal implementation or instruction stream complexity.  Superscalar
+    implementations can issue multiple regular base instructions in parallel,
+    denoting them as part of a single instruction, and reassemble the output
+    at instruction retirement or at memory store with minimal added
+    complexity.
+
+    Lightweight vector instructions can be implemented with minimal additional
+    delay by checking if an instruction or data output is part of a vector
+    operation and executing normally if not, or otherwise adding latency and
+    carrying out partitioning or reassembly over an extra clock cycle.
+
+    Floating-point operations and the and, or, and xor bit operations require
+    no modification, but also cannot make extensive use of single execution
+    circuits.  ``M'' extension operations also cannot subdivide an execution
+    unit; however, high-efficiency dividers in particular require little area,
+    and an implementation can include several in a subset of ALUs to avoid
+    tying up multiple execution units.
+
+    The sll, srl, and sra operations can reuse a barrel shifter, in combination
+    with bit masking, requiring extra hardware or an extra clock cycle.  A
+    single 32-bit barrel shifter can carry out four 8-bit shifts.
+
+    A 32-bit carry-select or parallel prefix adder-subtractor can simultaneously
+    produce one 32-bit result, two 16-bit results, or four 8-bit results with
+    minimal extra hardware.  Parallel prefix adders require fan-out to a duplicate
+    final stage, with all sub-adders out of the critical path; variable-length
+    carry-select adders must have splits on 8-bit boundaries.
+
+    The and, or, and xor operations affect each bit in isolation and require no
+    special hardware.  These, the shift operations, and the adder-subtractor
+    operations may subdivide a single circuit within an ALU to execute on
+    multiple data values of a word width narrower than XLEN.
+
+    Each of these modifications requires only self-contained and minor behavioral
+    changes and a few extra control bits.  Vector operations are easily tracked
+    for completion across individual registers, minimizing the additional logic
+    in detecting when a register has been fully written and allowing out-of-order
+    instruction scheduling with little or in some implementations no logic changes.
+\end{commentary}
+
+\begin{figure*}[h!]
+    {\footnotesize
+        \begin{center}
+            \begin{tabular}{U@{}cccc}
+                \instbitrange{31}{7} &
+                \instbit{6} &
+                \instbit{5}{4} &
+                \instbitrange{3}{0} \\
+                \hline
+                \multicolumn{1}{|c|}{\warl} &
+                \multicolumn{1}{c|}{E} &
+                \multicolumn{1}{c|}{M[1:0]} &
+                \multicolumn{1}{c|}{Size[3:0] (\wlrl)} \\
+                \hline
+                27 & 1 & 2 & 4 \\
+            \end{tabular}
+        \end{center}
+    }
+    \vspace{-0.1in}
+    \caption{Lightweight Vector Register ({\tt zvinxd}).}
+    \label{misareg}
+\end{figure*}
+
+When vector behavior is enabled, instructions acting as vector instructions are said
+to be vector instructions.
+
+When ``Size'' is 0, vector behavior is disabled.  ``Size'' may not be greater than 12
+when ``E'' is unset, 8 when ``M'' is non-zero, and 4 when ``E'' is set.  This indicates
+the number of registers used as vector register.
+
+When ``M'' is non-zero, x23 acts as a vector mask:  operations only apply to vector
+elements where x23[i] is 1.  When ``M'' is 01, vector operations do not apply to masked
+vector elements, and the elements are unchanged in the register, read on load, and
+written back on store; when ``M'' is 10, vector operations do not apply to masked
+elements, and masked elements are zeroed on load and written back on store; when ``M''
+is 11, vector operations do not apply to masked elements, loads do not overwrite masked
+elements in the registers, and stores do not affect the memory contents targeted by
+masked elements.
+
+\begin{table}[htp]
+    \begin{small}
+        \begin{center}
+            \begin{tabular}{cl}
+                \hline
+                \multicolumn{1}{|c|}{M Register} &
+                \multicolumn{1}{c|}{Meaning} \\
+                \hline
+                \multicolumn{1}{|c|}{00} &
+                \multicolumn{1}{c|}{No masking}\\
+                \hline
+                \multicolumn{1}{|c|}{01} &
+                \multicolumn{1}{c|}{Load and store masked elements unchanged}\\
+                \hline
+                \multicolumn{1}{|c|}{10} &
+                \multicolumn{1}{c|}{Load masked elements as zero}\\
+                \hline
+                \multicolumn{1}{|c|}{11} &
+                \multicolumn{1}{c|}{Ignore:  loads and stores do not write masked elements to memory or register}\\
+                \hline
+            \end{tabular}
+        \end{center}
+    \end{small}
+    \caption{Accrued exception flag encoding.}
+    \label{bitdef}
+\end{table}
+
+\begin{commentary}
+    Masking removes vector elements from the execution path, freeing up resources.
+    Operations must never raise exceptions due to masked vector elements.
+    Implementations must write the actual contents of unchanged and zero-masked
+    vectors back to memory.
+
+    Zeroing-masked elements allows zeroing multiple registers at once by loading an
+    arbitrary address.  Implementations can avoid a cache miss by not issuing a read
+    for masked elements.
+
+    Ignored-masked elements are neither read from nor written to memory and do not
+    alter the contents of registers on load.
+
+    Atomic instructions impose no consistency restrictions on ignore-masked elements;
+    all unmasked elements are part of the reservation set for LR and SC instructions.
+    When the masked elements must be in the reservation set, the unchanged masking
+    mode is appropriate.
+
+    Because vector operations only occur when using specific source and destination
+    registers, atomic LR/SC can provide a limited substitute for transactional memory.
+    On RV64, a 12-register LR/SC represents 96 contiguous bytes which may be operated
+    on as normal.  The definition of constrained LR/SC loops is unchanged, and a
+    reservation set can only be created when loading one set of vector registers,
+    limiting useful operations generally to non-vector operations.
+
+    All other AMO instructions apply to vector operations as usual.
+\end{commentary}
+
+The ``E'' flag controls ``RVE'' vector behavior.  When ``misa'' ``E'' is set,  the
+``E'' bit must be 1 and may not be set to 0.  Code targeting ``RVE'' must explicitly
+set the ``E'' bit when using vector operations; implementations must support ``E'' mode
+to ensure ``RVE'' code executes correctly on ``RVI'', and need not support ``RVE'' in
+general to do so.  ``RVI'' implementations may support only ``E'' mode.
+
+[Given the lack of added complexity, it may make sense to require RVI to support both
+modes if zvinx is implemented.]
+
+In ``E'' mode, vector instructions are of the form ``op x15, x15, x11''.  All load and
+store instructions targeting ``x15'' or ``x11'' are vector loads and stores.
+
+When not in ``E'' mode, vector instructions are of the form ``op x31, x31, x19''.  Load
+and store instructions targeting ``x31'' or ``x19'' are vector loads and stores.
+
+Base instructions use the width of the last vector load to either vector register,
+stored in ``zvinxd'' and unalterable directly.   Explicit-width instructions such as
+``addw'' do not change the width in ``zvinxd'', but scale it to their own word size during
+their own execution.  [Masking?]
+
+The same rules apply for the ``F'', ``D'', and ``Q'' floating-point extensions with
+respect to ``x15'' and ``x11'' or ``x31'' and ``x19''.
+
+\begin{commentary}
+    All operations not of the form given are non-vector operations.  Instruction code can
+    operate on any register as normal in vector mode by not using the vector form.
+    Unreserved registers between the reserved upper and lower vector registers are
+    available at all times; registers in the lower bank are available after their vector
+    operations are complete; and registers in the upper bank store results of vector
+    operations and are available once their contents are no longer needed.  No hardware
+    enforcement exists for any of this; it is a purely programmatic consideration.
+
+    Because of this, ``zvinx'' operation behaves largely like non-vector operation, and
+    instruction code need not turn zvinx off between vector operations.  So long as there
+    are no memory loads to ``x31'' or ``x19'' and no instructions of the vector form,
+    vector mode has no effect whatsoever.
+
+\end{commentary}

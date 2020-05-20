@@ -1,2 +1,15 @@
 .DS_Store
 .*.swp
+# TeX compilation data files
+*.pdf
+*.sav
+*.bak
+*.aux
+*.bbl
+*.blg
+*.log
+*.gz
+*.bcf
+*.xml
+*.out
+*.toc
