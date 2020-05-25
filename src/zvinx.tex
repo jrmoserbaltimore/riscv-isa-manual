@@ -1,3 +1,4 @@
+i% vim: ts=4 sw=4 et
 \chapter{``Zvinx'' Standard Extension for Lightweight Vector Architecture, v0.0}
 \label{sec:zvinx}
 
@@ -9,23 +10,20 @@ new CSR.
 \begin{commentary}
     The lightweight vector extension is intended to support data-parallel
     execution of existing arithmetic and floating-point instructions, with
-    minimal implementation or instruction stream complexity.  Superscalar
-    implementations can issue multiple regular base instructions in parallel,
-    denoting them as part of a single instruction, and reassemble the output
-    at instruction retirement or at memory store with minimal added
-    complexity.
+    minimal implementation or instruction stream complexity.  Atomic vector
+    operations are excluded:  both locking primitives and transactional
+    memory better provide for large atomic operations, and atomic vector
+    operations add significant implementation complexity.
+
+    Superscalar implementations can issue multiple regular base instructions
+    in parallel, denoting them as part of a single instruction, and
+    reassemble the output at instruction retirement or at memory store with
+    minimal added complexity.
 
     Lightweight vector instructions can be implemented with minimal additional
     delay by checking if an instruction or data output is part of a vector
     operation and executing normally if not, or otherwise adding latency and
     carrying out partitioning or reassembly over an extra clock cycle.
-
-    Floating-point operations and the and, or, and xor bit operations require
-    no modification, but also cannot make extensive use of single execution
-    circuits.  ``M'' extension operations also cannot subdivide an execution
-    unit; however, high-efficiency dividers in particular require little area,
-    and an implementation can include several in a subset of ALUs to avoid
-    tying up multiple execution units.
 
     The sll, srl, and sra operations can reuse a barrel shifter, in combination
     with bit masking, requiring extra hardware or an extra clock cycle.  A
@@ -59,7 +57,7 @@ new CSR.
                 \instbitrange{3}{0} \\
                 \hline
                 \multicolumn{1}{|c|}{\warl} &
-                \multicolumn{1}{c|}{E} &
+                \multicolumn{1}{c|}{W} &
                 \multicolumn{1}{c|}{M[1:0]} &
                 \multicolumn{1}{c|}{Size[3:0] (\wlrl)} \\
                 \hline
@@ -75,12 +73,81 @@ new CSR.
 When vector behavior is enabled, instructions acting as vector instructions are said
 to be vector instructions.
 
-When ``Size'' is 0, vector behavior is disabled.  ``Size'' may not be greater than 12
-when ``E'' is unset, 8 when ``M'' is non-zero, and 4 when ``E'' is set.  This indicates
-the number of registers used as vector register.
+Vector instructions are instructions of the form {\em op x15, x15, x11}, loads of
+the form {\em lw x15, 0(rs1)} or {\em lw x11, 0(rs1)}, and stores of the form
+{\em sw x15, 0(rs1)} and {\em sw x11, 0(rs1)}.  x15 and x11 are termed the upper and
+lower vector registers, respectively.
 
-When ``M'' is non-zero, x23 acts as a vector mask:  operations only apply to vector
-elements where x23[i] is 1.  When ``M'' is 01, vector operations do not apply to masked
+\begin{commentary}
+    Instructions not of the vector form will act as normal in vector mode, even
+    when using vector instructions.  This allows code to avoid switching in and
+    out of vector mode continuously during complex vector-heavy subroutines.
+\end{commentary}
+
+Size indicates the vector width.  When Size is 0, vector behavior is disabled;
+otherwise vector operations target the upper and lower vector banks according to Size.
+Vector banks extend down to include the number of registers indicated by Size, with
+Size = 4 indicating x15 through x12 as the upper bank and x11 through x8 as the lower
+bank.  Implementations may support smaller Size settings and must read as the lower
+of the last value written or the maximum Size supported.
+
+\begin{commentary}
+
+    Architectural limitations may limit vector operation size.  ASIC implementations
+    may make trade-offs between cost and supported width.  Simulators may optimize
+    for the host platform's vector register width.
+
+    FPGA implementations often have limited block RAM port width and may waste
+    resources on enough BRAM to supply the port width.  A 32KiB BRAM cache on 32Kib
+    BRAM with 64-bit data port can supply a 64 byte read or write, or 8 registers;
+    the 96-byte vector loads and stores to support W mode's 12-register Size
+    requires 12 such BRAMs.  These figures double when implementing RV128.
+
+    Software can read Size into a register and add it to an iterator to implicitly
+    use the maximum Size.  This value also determines when the software must
+    handle the tail end, and again the code required for a single hard-code value
+    largely only needs an {\em addi} replaced with an {\em add} to use a dynamic
+    value.
+
+\end{commentary}
+
+W indicates wide vector mode.  Implementations must set W to 0 on reset and only
+enable wide vector mode when written.  Implementations not supporting wide vector
+mode may hardwire W to 0.  In wide vector mode, x31 and x19 are the upper and
+lower register vectors, and Size may be as high as 12.
+
+\begin{commentary}
+    Wide vector mode is unsupported on RVE, and RVE-only code is not required to
+    account for wide vector mode.  Wide vector mode code should set and reset W
+    before and after executing; RVE-only code may always write 0 to W as a
+    guard against incorrect RVI wide vector code, but this does not guarantee
+    correct operation of the incorect code, e.g. if it sets W in initialization
+    and assumes W is never unset.
+
+    Software supporting wide vector mode must check if W remains 0 after set
+    and select between alternate code targeting the same registers.  Code can
+    use two branch instructions, but two separate loops are preferable when
+    looping to avoid performance loss on implementations without sufficient
+    branch prediction and speculative execution.
+\end{commentary}
+
+Vector operations operate across the span of vector registers.  Vector loads and
+stores read and write the full width of the vectors at once.  Loads and stores
+must align to XLEN.
+
+The most recent vector load indicates vector element width, without regard to the
+target register bank or the prior load.  Store operations mismatched in data
+width are invalid and raise an exception. {\em FIXME: what kind of exception?}
+{\em FIXME:  element width exposed in CSR?}
+
+\begin{commentary}
+    We considered making all store operations valid or undefined, but rejected
+    this in favor of enforcing correctness.  Vector loads already must be full
+    XLEN loads to each register, and stores the same.
+\end{commentary}
+
+When ``M'' is non-zero, x7 acts as a vector mask:  operations only apply to vector
+elements where x8[i] is 1.  When ``M'' is 01, vector operations do not apply to masked
 vector elements, and the elements are unchanged in the register, read on load, and
 written back on store; when ``M'' is 10, vector operations do not apply to masked
 elements, and masked elements are zeroed on load and written back on store; when ``M''
@@ -115,6 +182,8 @@ masked elements.
     \label{bitdef}
 \end{table}
 
+Size cannot be greater than 8 when M is enabled.
+
 \begin{commentary}
     Masking removes vector elements from the execution path, freeing up resources.
     Operations must never raise exceptions due to masked vector elements.
@@ -127,57 +196,57 @@ masked elements.
 
     Ignored-masked elements are neither read from nor written to memory and do not
     alter the contents of registers on load.
-
-    Atomic instructions impose no consistency restrictions on ignore-masked elements;
-    all unmasked elements are part of the reservation set for LR and SC instructions.
-    When the masked elements must be in the reservation set, the unchanged masking
-    mode is appropriate.
-
-    Because vector operations only occur when using specific source and destination
-    registers, atomic LR/SC can provide a limited substitute for transactional memory.
-    On RV64, a 12-register LR/SC represents 96 contiguous bytes which may be operated
-    on as normal.  The definition of constrained LR/SC loops is unchanged, and a
-    reservation set can only be created when loading one set of vector registers,
-    limiting useful operations generally to non-vector operations.
-
-    All other AMO instructions apply to vector operations as usual.
 \end{commentary}
 
-The ``E'' flag controls ``RVE'' vector behavior.  When ``misa'' ``E'' is set,  the
-``E'' bit must be 1 and may not be set to 0.  Code targeting ``RVE'' must explicitly
-set the ``E'' bit when using vector operations; implementations must support ``E'' mode
-to ensure ``RVE'' code executes correctly on ``RVI'', and need not support ``RVE'' in
-general to do so.  ``RVI'' implementations may support only ``E'' mode.
-
-[Given the lack of added complexity, it may make sense to require RVI to support both
-modes if zvinx is implemented.]
-
-In ``E'' mode, vector instructions are of the form ``op x15, x15, x11''.  All load and
-store instructions targeting ``x15'' or ``x11'' are vector loads and stores.
-
-When not in ``E'' mode, vector instructions are of the form ``op x31, x31, x19''.  Load
-and store instructions targeting ``x31'' or ``x19'' are vector loads and stores.
-
-Base instructions use the width of the last vector load to either vector register,
-stored in ``zvinxd'' and unalterable directly.   Explicit-width instructions such as
-``addw'' do not change the width in ``zvinxd'', but scale it to their own word size during
-their own execution.  [Masking?]
+Only non-immediate base instructions are valid vector instructions.  Immediate and
+width-specific instructions raise an exception when called in the vector form.
+{\em FIXME:  which?}
 
 The same rules apply for the ``F'', ``D'', and ``Q'' floating-point extensions with
 respect to ``x15'' and ``x11'' or ``x31'' and ``x19''.
 
 \begin{commentary}
-    All operations not of the form given are non-vector operations.  Instruction code can
-    operate on any register as normal in vector mode by not using the vector form.
-    Unreserved registers between the reserved upper and lower vector registers are
-    available at all times; registers in the lower bank are available after their vector
-    operations are complete; and registers in the upper bank store results of vector
-    operations and are available once their contents are no longer needed.  No hardware
-    enforcement exists for any of this; it is a purely programmatic consideration.
+    Supporting immediate and width-specified instructions would complicate the
+    lightweight vector operations implementation for no obvious benefit.  Extension
+    instructions, notably {\em mulh}, are an exception.
+\end{commentary}
 
-    Because of this, ``zvinx'' operation behaves largely like non-vector operation, and
-    instruction code need not turn zvinx off between vector operations.  So long as there
-    are no memory loads to ``x31'' or ``x19'' and no instructions of the vector form,
-    vector mode has no effect whatsoever.
+\begin{commentary}
+    Lightweight vector operations will extend to the M instructions by exposing
+    an M flag in zvinxd.
+
+    An F, D, H, and Q field will indicate support for floating point vector
+    operations.  A future draft will describe this.  As with integer operations,
+    only operations of the same format may be used after the immediate latest
+    floating point vector load.
+
+    Floating point vector configurations will have additional Size and M fields,
+    termed FSize and FM.  An additional two-bit FX register, for Float Extend,
+    defines the register format:  floating-point vectors can use the full
+    register for smaller operations.  For example, if FX is set to 2'b11 when
+    the Q extension is supported and Size to 12, FLW loads 48 single-precision
+    floats across each of the 12 128-bit registers.  Operations naturlly using
+    regisers larger or equal to FX are unaffected by its value.
+
+    Implementations will not be required to support extended floating point
+    vector operations.  An implementation supporting F, D, and Q vector
+    operations may support setting FX to 01, using 64-bit registers and
+    doubling the number of elements loaded for single-precision operations,
+    while not supporting setting FX to 11 and using 128-bit registers.
+    All smaller operations must be supported by the maximum FX supported.
+
+    As with other fields, these are {\warl} and must be tested by software
+    making use of them.  Software may multiply FSize by the effective increase
+    gained through wider registers to determine the number number of
+    operations per enstruciton, e.g. when FSize is 12 and FX is Q, vector
+    operations will perform 48 single-precision floating point operations per
+    instruction.
+
+    Support for the extension providing the given register size is not
+    strictly necessary, and an implementation may support only the F
+    extension while allowing FX to be Q.  Specialized vector processors
+    may opt to do this when the logic for D and Q extensions is unnecessary
+    but the application strongly benefits from larger vector operations.
 
 \end{commentary}
+
